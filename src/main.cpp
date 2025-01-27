@@ -198,38 +198,20 @@ void PerformUpdate()
 
 void loop()
 {
-  // Set values to send
-  myData.id = BOARD_ID;
-  // Read the state of the reed switch and send open or closed
-  if (digitalRead(reedSwitch) == HIGH)
-  {
-    strcpy(myData.state, "Open");
-  }
-  else
-  {
-    strcpy(myData.state, "Closed");
-  }
+
+
 
   snprintf(msg, MSG_BUFFER_SIZE, "%ld", digitalRead(reedSwitch) == HIGH);
   Serial.print("Publish message: ");
   Serial.println(msg);
   mqttClient.publish(windowStateTopic, msg);
 
-  myData.vBatt = (analogRead(A0) * 4.2 * 10 / 1023);
-  snprintf(msg, MSG_BUFFER_SIZE, "%ld", myData.vBatt);
+ float vBatt = (analogRead(A0) * 4.2 * 10 / 1023);
+  snprintf(msg, MSG_BUFFER_SIZE, "%ld", vBatt);
   mqttClient.publish(batteryVoltageTopic, msg);
 
-#ifdef useTempDS18B20
-  myData.Temp = sensors.getTempC(Thermometer);
-#elseif #elseif useAHT10 || seBME280
-  myData.Temp = sensors.getTempC(Thermometer);
-  myData.Humid = 0.0; // sensors.getTempC(Thermometer);
-#endif
 
-  // Send message via ESP-NOW
-  // esp_now_send(0, (uint8_t *)&myData, sizeof(myData));
-  // ESP.deepSleep(0);
-  delay(10000);
+  delay(1000);
 
   int currentVersion = GetCurrentVersion();
   if (currentVersion > MY_VERSION)
@@ -241,5 +223,7 @@ void loop()
   {
     Serial.println("No update available");
   }
+  Serial.println("Switching off");
+  delay(1000);
   digitalWrite(powerOff, LOW); // Switch off supply
 }
