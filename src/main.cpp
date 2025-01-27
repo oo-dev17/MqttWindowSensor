@@ -1,10 +1,8 @@
 #include <PubSubClient.h>
 #include <ESP8266WiFi.h>
-#include <espnow.h>
 #include <ArduinoJson.h>
 #include "wifiConfig.h"
 #include <ESP8266HTTPClient.h>
-#include <Updater.h>
 
 const char *mqtt_server = "192.168.2.28";
 String ReadCurrentVersionUrl = "http://" + String(mqtt_server) + ":8093/v1/state/mqtt.0.WindowSensors.CurrentVersion";
@@ -12,56 +10,30 @@ String ReadCurrentVersionUrl = "http://" + String(mqtt_server) + ":8093/v1/state
 
 const int MY_VERSION = 1;
 
-WiFiClient espClient;
-PubSubClient mqttClient(espClient);
+WiFiClient wifiClient;
+HTTPClient httpClient;
+PubSubClient mqttClient(wifiClient);
+
 unsigned long lastMsg = 0;
-#define MSG_BUFFER_SIZE (50)
 char windowStateTopic[50];
 char batteryVoltageTopic[50];
+
+#define MSG_BUFFER_SIZE (50)
 char msg[MSG_BUFFER_SIZE];
 char macString[7]; // 6 characters + null terminator
-
-uint8_t bridgeAddress1[] = {0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC}; // please update this with the MAC address of your ESP-NOW TO MQTT brigde
-// uint8_t bridgeAddress2[] = {0xNN, 0x4NN, 0xNN, 0xNN, 0xNN, 0xNN};   //please update this with the MAC address of your ESP-NOW TO MQTT brigde
-
-// Set your Board ID (ESP32 Sender #1 = BOARD_ID 1, ESP32 Sender #2 = BOARD_ID 2, etc)
-#define BOARD_ID 20
 
 const int reedSwitch = 13;
 const int powerOff = 16; // set to low to turn off LDO
 
-// Structure example to send data
-// Must match the receiver structure
-typedef struct struct_message
-{
-  int id;
-  char state[7];
-  int vBatt;
-  float Temp;
-} struct_message;
 
-// Create a struct_message called test to store variables to be sent
-struct_message myData;
 
-// Callback when data is sent
-void OnDataSent(uint8_t *mac_addr, uint8_t sendStatus)
-{
-  /* Serial.print("\r\nLast Packet Send Status: ");
-    if (sendStatus == 0){
-     Serial.println("Delivery success");
-    }
-    else{
-     Serial.println("Delivery fail");
-    }
-  */
-}
 void MqttClientConnect()
 {
   while (!mqttClient.connected())
   {
     Serial.print("Attempting MQTT connection...");
     // Create a random client ID
-    String clientId = "esp8288";
+    String clientId = "esp8266";
     // Attempt to connect
     if (mqttClient.connect(clientId.c_str()))
     {
@@ -83,16 +55,14 @@ void MqttClientConnect()
 }
 int GetCurrentVersion()
 {
-  int val;
-  WiFiClient wifiClient;
-  HTTPClient http;
-  if (http.begin(wifiClient, ReadCurrentVersionUrl))
-  {
+  int val = -1;
 
-    int httpResponseCode = http.GET();
+  if (httpClient.begin(wifiClient, ReadCurrentVersionUrl))
+  {
+    int httpResponseCode = httpClient.GET();
     if (httpResponseCode > 0)
     {
-      String payload = http.getString();
+      String payload = httpClient.getString();
       Serial.println("Value: " + payload);
       JsonDocument doc;
       DeserializationError error = deserializeJson(doc, payload);
@@ -110,7 +80,7 @@ int GetCurrentVersion()
     {
       Serial.println("Error in HTTP request");
     }
-    http.end();
+    httpClient.end();
     return val;
   }
   else
@@ -131,14 +101,6 @@ void setup()
   digitalWrite(powerOff, HIGH);
   // Set device as a Wi-Fi Station
   WiFi.mode(WIFI_STA);
-  // WiFi.disconnect();
-
-  delay(1000);
-  Serial.print("1");
-  delay(1000);
-  Serial.print("2");
-  delay(1000);
-  Serial.print("3");
 
   Serial.print("Connecting to ");
   Serial.println(WIFI_SSID);
@@ -161,23 +123,6 @@ void setup()
   mqttClient.setServer(mqtt_server, 1883);
   MqttClientConnect();
 
-  // Init ESP-NOW
-  if (esp_now_init() != 0)
-  {
-    Serial.println("Error initializing ESP-NOW");
-    return;
-  }
-  // Set ESP-NOW role
-  esp_now_set_self_role(ESP_NOW_ROLE_CONTROLLER);
-
-  // Once ESPNow is successfully init, we will register for Send CB to
-  // get the status of Trasnmitted packet
-  esp_now_register_send_cb(OnDataSent);
-
-  // Register peer
-  esp_now_add_peer(bridgeAddress1, ESP_NOW_ROLE_SLAVE, 1, NULL, 0);
-  // esp_now_add_peer(bridgeAddress2, ESP_NOW_ROLE_SLAVE, 2, NULL, 0);
-
   // Retrieve the MAC address of the device
   uint8_t mac[6];
   WiFi.macAddress(mac);
@@ -191,16 +136,16 @@ void setup()
 }
 void PerformUpdate()
 {
-  const char *firmware_url = "http://yourserver.com/firmware.bin";
-  HTTPClient http;
+  const char *firmware_url = "http://192.168.2.20:5005/UpdateImages/Update.bin";
 
   // Send GET request to the firmware URL
-  http.begin(firmware_url);
-  int httpCode = http.GET();
+  httpClient.begin(wifiClient, firmware_url);
+  httpClient.setAuthorization(WEBDAV_NAME, WEBDAV_PASS);
+  int httpCode = httpClient.GET();
 
   if (httpCode == HTTP_CODE_OK)
   { // Check if the server responded with HTTP 200
-    int contentLength = http.getSize();
+    int contentLength = httpClient.getSize();
     bool canBegin = Update.begin(contentLength);
 
     if (canBegin)
@@ -208,7 +153,7 @@ void PerformUpdate()
       Serial.println("Starting firmware update...");
 
       // Stream the firmware binary to the Update library
-      WiFiClient &client = http.getStream();
+      WiFiClient &client = httpClient.getStream();
       size_t written = Update.writeStream(client);
 
       if (written == contentLength)
@@ -248,7 +193,7 @@ void PerformUpdate()
     Serial.printf("HTTP GET failed. Error code: %d\n", httpCode);
   }
 
-  http.end();
+  httpClient.end();
 }
 
 void loop()
