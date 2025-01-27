@@ -1,10 +1,16 @@
 #include <PubSubClient.h>
 #include <ESP8266WiFi.h>
 #include <espnow.h>
-
+#include <ArduinoJson.h>
 #include "wifiConfig.h"
+#include <ESP8266HTTPClient.h>
+#include <Updater.h>
 
 const char *mqtt_server = "192.168.2.28";
+String ReadCurrentVersionUrl = "http://" + String(mqtt_server) + ":8093/v1/state/mqtt.0.WindowSensors.CurrentVersion";
+// http://192.168.2.28:8093/v1/state/mqtt.0.WindowSensors.3D3346.batteryVoltage
+
+const int MY_VERSION = 1;
 
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
@@ -75,6 +81,45 @@ void MqttClientConnect()
     }
   }
 }
+int GetCurrentVersion()
+{
+  int val;
+  WiFiClient wifiClient;
+  HTTPClient http;
+  if (http.begin(wifiClient, ReadCurrentVersionUrl))
+  {
+
+    int httpResponseCode = http.GET();
+    if (httpResponseCode > 0)
+    {
+      String payload = http.getString();
+      Serial.println("Value: " + payload);
+      JsonDocument doc;
+      DeserializationError error = deserializeJson(doc, payload);
+      if (error)
+      {
+        Serial.print("Failed to parse JSON: ");
+        Serial.println(error.c_str());
+        return -1;
+      }
+      val = doc["val"];
+      Serial.print("CurrentVersion from ioBroker: ");
+      Serial.println(val);
+    }
+    else
+    {
+      Serial.println("Error in HTTP request");
+    }
+    http.end();
+    return val;
+  }
+  else
+  {
+    Serial.println("Error in HTTP request");
+    return -1;
+  }
+}
+
 void setup()
 {
   // Init Serial Monitor
@@ -91,9 +136,9 @@ void setup()
   delay(1000);
   Serial.print("1");
   delay(1000);
-  Serial.print("1");
+  Serial.print("2");
   delay(1000);
-  Serial.print("1");
+  Serial.print("3");
 
   Serial.print("Connecting to ");
   Serial.println(WIFI_SSID);
@@ -144,6 +189,67 @@ void setup()
   snprintf(windowStateTopic, sizeof(windowStateTopic), "%s/%s/windowState", parentIdentifier, macString);
   snprintf(batteryVoltageTopic, sizeof(windowStateTopic), "%s/%s/batteryVoltage", parentIdentifier, macString);
 }
+void PerformUpdate()
+{
+  const char *firmware_url = "http://yourserver.com/firmware.bin";
+  HTTPClient http;
+
+  // Send GET request to the firmware URL
+  http.begin(firmware_url);
+  int httpCode = http.GET();
+
+  if (httpCode == HTTP_CODE_OK)
+  { // Check if the server responded with HTTP 200
+    int contentLength = http.getSize();
+    bool canBegin = Update.begin(contentLength);
+
+    if (canBegin)
+    {
+      Serial.println("Starting firmware update...");
+
+      // Stream the firmware binary to the Update library
+      WiFiClient &client = http.getStream();
+      size_t written = Update.writeStream(client);
+
+      if (written == contentLength)
+      {
+        Serial.println("Firmware written successfully!");
+      }
+      else
+      {
+        Serial.printf("Firmware write failed. Written: %d, Expected: %d\n", written, contentLength);
+      }
+
+      // Finalize the update
+      if (Update.end())
+      {
+        if (Update.isFinished())
+        {
+          Serial.println("Update completed successfully. Restarting...");
+          ESP.restart(); // Restart the device to apply the update
+        }
+        else
+        {
+          Serial.println("Update not finished. Something went wrong.");
+        }
+      }
+      else
+      {
+        Serial.printf("Update failed. Error #: %d\n", Update.getError());
+      }
+    }
+    else
+    {
+      Serial.println("Not enough space to begin OTA update.");
+    }
+  }
+  else
+  {
+    Serial.printf("HTTP GET failed. Error code: %d\n", httpCode);
+  }
+
+  http.end();
+}
 
 void loop()
 {
@@ -176,8 +282,19 @@ void loop()
 #endif
 
   // Send message via ESP-NOW
-  esp_now_send(0, (uint8_t *)&myData, sizeof(myData));
+  // esp_now_send(0, (uint8_t *)&myData, sizeof(myData));
   // ESP.deepSleep(0);
   delay(10000);
+
+  int currentVersion = GetCurrentVersion();
+  if (currentVersion > MY_VERSION)
+  {
+    Serial.println("There is an update to " + currentVersion);
+    PerformUpdate();
+  }
+  else
+  {
+    Serial.println("No update available");
+  }
   digitalWrite(powerOff, LOW); // Switch off supply
 }
