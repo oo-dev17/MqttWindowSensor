@@ -8,7 +8,7 @@ const char *mqtt_server = "192.168.2.28";
 String ReadCurrentVersionUrl = "http://" + String(mqtt_server) + ":8093/v1/state/mqtt.0.WindowSensors.CurrentVersion";
 // http://192.168.2.28:8093/v1/state/mqtt.0.WindowSensors.3D3346.batteryVoltage
 
-const int MY_VERSION = 1;
+const int MY_VERSION = 2;
 
 WiFiClient wifiClient;
 HTTPClient httpClient;
@@ -17,6 +17,7 @@ PubSubClient mqttClient(wifiClient);
 unsigned long lastMsg = 0;
 char windowStateTopic[50];
 char batteryVoltageTopic[50];
+char loggingTopic[50];
 
 #define MSG_BUFFER_SIZE (50)
 char msg[MSG_BUFFER_SIZE];
@@ -24,8 +25,6 @@ char macString[7]; // 6 characters + null terminator
 
 const int reedSwitch = 13;
 const int powerOff = 16; // set to low to turn off LDO
-
-
 
 void MqttClientConnect()
 {
@@ -38,10 +37,6 @@ void MqttClientConnect()
     if (mqttClient.connect(clientId.c_str()))
     {
       Serial.println("connected");
-      // Once connected, publish an announcement...
-      mqttClient.publish("outTopic", "hello world");
-      // ... and resubscribe
-      mqttClient.subscribe("inTopic");
     }
     else
     {
@@ -55,10 +50,13 @@ void MqttClientConnect()
 }
 int GetCurrentVersion()
 {
+
+  HTTPClient httpClient;
   int val = -1;
 
   if (httpClient.begin(wifiClient, ReadCurrentVersionUrl))
   {
+    Serial.println("Trying to read from " + ReadCurrentVersionUrl);
     int httpResponseCode = httpClient.GET();
     if (httpResponseCode > 0)
     {
@@ -78,14 +76,15 @@ int GetCurrentVersion()
     }
     else
     {
-      Serial.println("Error in HTTP request");
+      Serial.println("Error in HTTP request:0");
     }
     httpClient.end();
     return val;
   }
   else
   {
-    Serial.println("Error in HTTP request");
+    Serial.println("Error in HTTP request (httpClient.begin:false)");
+    httpClient.end();
     return -1;
   }
 }
@@ -129,36 +128,52 @@ void setup()
   // Create a string for the last three bytes
 
   sprintf(macString, "%02X%02X%02X", mac[3], mac[4], mac[5]);
-  const char *parentIdentifier = "WindowSensors"; // Example parent device class
+  const char *deviceClassIdentifier = "WindowSensors"; // Example parent device class
 
-  snprintf(windowStateTopic, sizeof(windowStateTopic), "%s/%s/windowState", parentIdentifier, macString);
-  snprintf(batteryVoltageTopic, sizeof(windowStateTopic), "%s/%s/batteryVoltage", parentIdentifier, macString);
+  snprintf(windowStateTopic, sizeof(windowStateTopic), "%s/%s/windowState", deviceClassIdentifier, macString);
+  snprintf(batteryVoltageTopic, sizeof(windowStateTopic), "%s/%s/batteryVoltage", deviceClassIdentifier, macString);
+  snprintf(loggingTopic, sizeof(windowStateTopic), "%s/%s/log", deviceClassIdentifier, macString);
 }
-void PerformUpdate()
-{
-  const char *firmware_url = "http://192.168.2.20:5005/UpdateImages/Update.bin";
+void Log(String string){
+  snprintf(msg, MSG_BUFFER_SIZE, "%ld", string);
+   mqttClient.publish(batteryVoltageTopic, msg);
+}
 
+void PrintRam() {
+    Serial.print("Free RAM: ");
+    Serial.print(ESP.getFreeHeap());
+    Serial.println(" bytes");
+}
+
+void PerformUpdate(int version)
+{
+  HTTPClient updateHttpClient;
+
+  const char *firmware_url = "http://192.168.2.20:5005/UpdateImages/firmware.bin";
+  
   // Send GET request to the firmware URL
-  httpClient.begin(wifiClient, firmware_url);
-  httpClient.setAuthorization(WEBDAV_NAME, WEBDAV_PASS);
-  int httpCode = httpClient.GET();
+  updateHttpClient.begin(wifiClient, firmware_url);
+  updateHttpClient.setAuthorization(WEBDAV_NAME, WEBDAV_PASS);
+  int httpCode = updateHttpClient.GET();
 
   if (httpCode == HTTP_CODE_OK)
-  { // Check if the server responded with HTTP 200
-    int contentLength = httpClient.getSize();
+  { 
+    // Check if the server responded with HTTP 200
+    int contentLength = updateHttpClient.getSize();
     bool canBegin = Update.begin(contentLength);
 
     if (canBegin)
     {
-      Serial.println("Starting firmware update...");
+      Serial.println(String("Starting firmware update from ") + firmware_url);
 
       // Stream the firmware binary to the Update library
-      WiFiClient &client = httpClient.getStream();
+      WiFiClient &client = updateHttpClient.getStream();
       size_t written = Update.writeStream(client);
 
       if (written == contentLength)
       {
         Serial.println("Firmware written successfully!");
+        Log("Updated to version" + String(version));
       }
       else
       {
@@ -190,40 +205,45 @@ void PerformUpdate()
   }
   else
   {
+    
     Serial.printf("HTTP GET failed. Error code: %d\n", httpCode);
   }
 
-  httpClient.end();
+  updateHttpClient.end();
 }
 
 void loop()
 {
 
-
+  MqttClientConnect();
 
   snprintf(msg, MSG_BUFFER_SIZE, "%ld", digitalRead(reedSwitch) == HIGH);
-  Serial.print("Publish message: ");
-  Serial.println(msg);
-  mqttClient.publish(windowStateTopic, msg);
+  Serial.print("Publish window value: ");
+  Serial.print(msg);
+  bool success = mqttClient.publish(windowStateTopic, msg, true);
+  Serial.println(String(" :") + (success ? " SUCCESS" : "FAIL!"));
 
- float vBatt = (analogRead(A0) * 4.2 * 10 / 1023);
+  float vBatt = (analogRead(A0) * 4.2 * 10 / 1023);
   snprintf(msg, MSG_BUFFER_SIZE, "%ld", vBatt);
-  mqttClient.publish(batteryVoltageTopic, msg);
-
+  success = mqttClient.publish(batteryVoltageTopic, msg);
+  Serial.print("Publish bat value: ");
+  Serial.print(msg);
+  Serial.println(String(" :") + (success ? " SUCCESS" : "FAIL!"));
 
   delay(1000);
 
-  int currentVersion = GetCurrentVersion();
-  if (currentVersion > MY_VERSION)
+  int releasedVersion = GetCurrentVersion();
+  if (releasedVersion > MY_VERSION)
   {
-    Serial.println("There is an update to " + currentVersion);
-    PerformUpdate();
+    Serial.printf("There is an update to %d\n" ,releasedVersion);
+    PerformUpdate(releasedVersion);
   }
   else
   {
-    Serial.println("No update available");
+    Serial.printf("No update available for, released: %d\n",releasedVersion);
   }
   Serial.println("Switching off");
-  delay(1000);
+  delay(5000);
   digitalWrite(powerOff, LOW); // Switch off supply
+  PrintRam();
 }
