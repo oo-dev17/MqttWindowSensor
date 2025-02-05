@@ -3,9 +3,12 @@
 #include <ArduinoJson.h>
 #include "wifiConfig.h"
 #include <ESP8266HTTPClient.h>
+#include <ESP8266mDNS.h>
+#include <ArduinoOTA.h>
 
 const char *mqtt_server = "192.168.2.28";
-String ReadCurrentVersionUrl = "http://" + String(mqtt_server) + ":8093/v1/state/mqtt.0.WindowSensors.CurrentVersion";
+String MqttCurrentVersionUrl = "http://" + String(mqtt_server) + ":8093/v1/state/mqtt.0.WindowSensors.CurrentVersion";
+String MqttStayOnUrl = "http://" + String(mqtt_server) + ":8093/v1/state/mqtt.0.WindowSensors.StayOn";
 // http://192.168.2.28:8093/v1/state/mqtt.0.WindowSensors.3D3346.batteryVoltage
 
 const int MY_VERSION = 2;
@@ -48,15 +51,15 @@ void MqttClientConnect()
     }
   }
 }
-int GetCurrentVersion()
+int GetMqttValue(String url)
 {
 
   HTTPClient httpClient;
   int val = -1;
 
-  if (httpClient.begin(wifiClient, ReadCurrentVersionUrl))
+  if (httpClient.begin(wifiClient, url))
   {
-    Serial.println("Trying to read from " + ReadCurrentVersionUrl);
+    Serial.println("Trying to read from " + url);
     int httpResponseCode = httpClient.GET();
     if (httpResponseCode > 0)
     {
@@ -122,6 +125,36 @@ void setup()
   mqttClient.setServer(mqtt_server, 1883);
   MqttClientConnect();
 
+  // OTA
+  ArduinoOTA.onStart([]()
+                     {
+    String type;
+    if (ArduinoOTA.getCommand() == U_FLASH) {
+      type = "sketch";
+    } else { // U_SPIFFS
+      type = "filesystem";
+    }
+    // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
+    Serial.println("Start updating " + type); });
+
+  ArduinoOTA.onEnd([]()
+                   { Serial.println("\nEnd"); });
+
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total)
+                        { Serial.printf("Progress: %u%%\r", (progress / (total / 100))); });
+
+  ArduinoOTA.onError([](ota_error_t error)
+                     {
+    Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+    else if (error == OTA_END_ERROR) Serial.println("End Failed"); });
+
+  ArduinoOTA.begin();
+  Serial.println("OTA Ready");
+
   // Retrieve the MAC address of the device
   uint8_t mac[6];
   WiFi.macAddress(mac);
@@ -134,15 +167,17 @@ void setup()
   snprintf(batteryVoltageTopic, sizeof(windowStateTopic), "%s/%s/batteryVoltage", deviceClassIdentifier, macString);
   snprintf(loggingTopic, sizeof(windowStateTopic), "%s/%s/log", deviceClassIdentifier, macString);
 }
-void Log(String string){
+void Log(String string)
+{
   snprintf(msg, MSG_BUFFER_SIZE, "%ld", string);
-   mqttClient.publish(batteryVoltageTopic, msg);
+  mqttClient.publish(batteryVoltageTopic, msg);
 }
 
-void PrintRam() {
-    Serial.print("Free RAM: ");
-    Serial.print(ESP.getFreeHeap());
-    Serial.println(" bytes");
+void PrintRam()
+{
+  Serial.print("Free RAM: ");
+  Serial.print(ESP.getFreeHeap());
+  Serial.println(" bytes");
 }
 
 void PerformUpdate(int version)
@@ -150,14 +185,14 @@ void PerformUpdate(int version)
   HTTPClient updateHttpClient;
 
   const char *firmware_url = "http://192.168.2.20:5005/UpdateImages/firmware.bin";
-  
+
   // Send GET request to the firmware URL
   updateHttpClient.begin(wifiClient, firmware_url);
   updateHttpClient.setAuthorization(WEBDAV_NAME, WEBDAV_PASS);
   int httpCode = updateHttpClient.GET();
 
   if (httpCode == HTTP_CODE_OK)
-  { 
+  {
     // Check if the server responded with HTTP 200
     int contentLength = updateHttpClient.getSize();
     bool canBegin = Update.begin(contentLength);
@@ -205,7 +240,7 @@ void PerformUpdate(int version)
   }
   else
   {
-    
+
     Serial.printf("HTTP GET failed. Error code: %d\n", httpCode);
   }
 
@@ -216,6 +251,8 @@ void loop()
 {
 
   MqttClientConnect();
+
+  ArduinoOTA.handle();
 
   snprintf(msg, MSG_BUFFER_SIZE, "%ld", digitalRead(reedSwitch) == HIGH);
   Serial.print("Publish window value: ");
@@ -232,17 +269,21 @@ void loop()
 
   delay(1000);
 
-  int releasedVersion = GetCurrentVersion();
+  int releasedVersion = GetMqttValue(MqttCurrentVersionUrl);
   if (releasedVersion > MY_VERSION)
   {
-    Serial.printf("There is an update to %d\n" ,releasedVersion);
+    Serial.printf("There is an update to %d\n", releasedVersion);
     PerformUpdate(releasedVersion);
   }
   else
   {
-    Serial.printf("No update available for, released: %d\n",releasedVersion);
+    Serial.printf("No update available for, released: %d\n", releasedVersion);
   }
-  Serial.println("Switching off");
+  int stayOn = GetMqttValue(MqttStayOnUrl);
+  if (stayOn = 0)
+  {
+    Serial.println("Switching off");
+  }
   delay(5000);
   digitalWrite(powerOff, LOW); // Switch off supply
   PrintRam();
