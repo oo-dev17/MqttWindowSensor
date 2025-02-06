@@ -4,7 +4,8 @@
 #include "wifiConfig.h"
 #include <ESP8266HTTPClient.h>
 #include <ESP8266mDNS.h>
-#include <ArduinoOTA.h>
+#include <ESP8266WebServer.h>
+#include <ElegantOTA.h>
 
 const char *mqtt_server = "192.168.2.28";
 String MqttCurrentVersionUrl = "http://" + String(mqtt_server) + ":8093/v1/state/mqtt.0.WindowSensors.CurrentVersion";
@@ -16,6 +17,8 @@ const int MY_VERSION = 2;
 WiFiClient wifiClient;
 HTTPClient httpClient;
 PubSubClient mqttClient(wifiClient);
+
+ESP8266WebServer server(80);
 
 unsigned long lastMsg = 0;
 char windowStateTopic[50];
@@ -125,35 +128,13 @@ void setup()
   mqttClient.setServer(mqtt_server, 1883);
   MqttClientConnect();
 
-  // OTA
-  ArduinoOTA.onStart([]()
-                     {
-    String type;
-    if (ArduinoOTA.getCommand() == U_FLASH) {
-      type = "sketch";
-    } else { // U_SPIFFS
-      type = "filesystem";
-    }
-    // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
-    Serial.println("Start updating " + type); });
 
-  ArduinoOTA.onEnd([]()
-                   { Serial.println("\nEnd"); });
-
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total)
-                        { Serial.printf("Progress: %u%%\r", (progress / (total / 100))); });
-
-  ArduinoOTA.onError([](ota_error_t error)
-                     {
-    Serial.printf("Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
-    else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
-    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
-    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
-    else if (error == OTA_END_ERROR) Serial.println("End Failed"); });
-
-  ArduinoOTA.begin();
-  Serial.println("OTA Ready");
+  server.on("/", []() {
+    server.send(200, "text/plain", "Hi! This is ElegantOTA Demo.");
+  });
+ 
+  ElegantOTA.begin(&server);    // Start ElegantOTA
+  server.begin();
 
   // Retrieve the MAC address of the device
   uint8_t mac[6];
@@ -252,9 +233,7 @@ void loop()
 
   MqttClientConnect();
 
-  ArduinoOTA.handle();
-
-  snprintf(msg, MSG_BUFFER_SIZE, "%ld", digitalRead(reedSwitch) == HIGH);
+    snprintf(msg, MSG_BUFFER_SIZE, "%ld", digitalRead(reedSwitch) == HIGH);
   Serial.print("Publish window value: ");
   Serial.print(msg);
   bool success = mqttClient.publish(windowStateTopic, msg, true);
@@ -280,11 +259,11 @@ void loop()
     Serial.printf("No update available for, released: %d\n", releasedVersion);
   }
   int stayOn = GetMqttValue(MqttStayOnUrl);
-  if (stayOn = 0)
+  if (stayOn == 0)
   {
     Serial.println("Switching off");
+    digitalWrite(powerOff, LOW); // Switch off supply
   }
   delay(5000);
-  digitalWrite(powerOff, LOW); // Switch off supply
   PrintRam();
 }
