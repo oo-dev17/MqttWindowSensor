@@ -232,6 +232,8 @@ void loop()
 {
 
   MqttClientConnect();
+  server.handleClient();
+  ElegantOTA.loop();
 
     snprintf(msg, MSG_BUFFER_SIZE, "%ld", digitalRead(reedSwitch) == HIGH);
   Serial.print("Publish window value: ");
@@ -259,6 +261,7 @@ void loop()
     Serial.printf("No update available for, released: %d\n", releasedVersion);
   }
   int stayOn = GetMqttValue(MqttStayOnUrl);
+  Serial.printf("stayOn is %d\n", stayOn);
   if (stayOn == 0)
   {
     Serial.println("Switching off");
