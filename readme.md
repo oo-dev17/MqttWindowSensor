@@ -1,12 +1,3 @@
-### Chat Content
-
-#### User's Request
-User requested documentation text for firmware about update possibilities and URLs.
-
----
-
-#### Assistant's Response
-
 ### Firmware Update Documentation
 
 #### Overview
