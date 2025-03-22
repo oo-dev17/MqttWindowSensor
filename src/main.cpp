@@ -11,8 +11,9 @@ const char *mqtt_server = "192.168.2.28";
 String MqttCurrentVersionUrl = "http://" + String(mqtt_server) + ":8093/v1/state/mqtt.0.WindowSensors.CurrentVersion";
 String MqttStayOnUrl = "http://" + String(mqtt_server) + ":8093/v1/state/mqtt.0.WindowSensors.StayOn";
 // http://192.168.2.28:8093/v1/state/mqtt.0.WindowSensors.3D3346.batteryVoltage
+const char *deviceClassIdentifier = "WindowSensors"; // Example parent device class
 
-const int MY_VERSION = 2;
+const int THIS_VERSION = 2;
 
 WiFiClient wifiClient;
 HTTPClient httpClient;
@@ -128,12 +129,10 @@ void setup()
   mqttClient.setServer(mqtt_server, 1883);
   MqttClientConnect();
 
+  server.on("/", []()
+            { server.send(200, "text/plain", "Hi! This is ElegantOTA Demo."); });
 
-  server.on("/", []() {
-    server.send(200, "text/plain", "Hi! This is ElegantOTA Demo.");
-  });
- 
-  ElegantOTA.begin(&server);    // Start ElegantOTA
+  ElegantOTA.begin(&server); // Start ElegantOTA
   server.begin();
 
   // Retrieve the MAC address of the device
@@ -142,16 +141,26 @@ void setup()
   // Create a string for the last three bytes
 
   sprintf(macString, "%02X%02X%02X", mac[3], mac[4], mac[5]);
-  const char *deviceClassIdentifier = "WindowSensors"; // Example parent device class
 
   snprintf(windowStateTopic, sizeof(windowStateTopic), "%s/%s/windowState", deviceClassIdentifier, macString);
-  snprintf(batteryVoltageTopic, sizeof(windowStateTopic), "%s/%s/batteryVoltage", deviceClassIdentifier, macString);
   snprintf(loggingTopic, sizeof(windowStateTopic), "%s/%s/log", deviceClassIdentifier, macString);
 }
+void generateAndPublish(const char *topicType, const char *message)
+{
+  char topic[50];
+  snprintf(topic, sizeof(topic), "%s/%s/%s", deviceClassIdentifier, macString, topicType);
+  bool success = mqttClient.publish(topic, message, true);
+  Serial.println(String("Publish to ") + topic + String(" :") + (success ? " SUCCESS" : "FAIL!"));
+}
+void generateAndPublish(const char *topicType, const String &message)
+{
+  generateAndPublish(topicType, message.c_str());
+}
+
 void Log(String string)
 {
   snprintf(msg, MSG_BUFFER_SIZE, "%ld", string);
-  mqttClient.publish(batteryVoltageTopic, msg);
+  generateAndPublish("log", msg);
 }
 
 void PrintRam()
@@ -189,6 +198,7 @@ void PerformUpdate(int version)
       if (written == contentLength)
       {
         Serial.println("Firmware written successfully!");
+        generateAndPublish("currentVersion", String(THIS_VERSION));
         Log("Updated to version" + String(version));
       }
       else
@@ -226,6 +236,12 @@ void PerformUpdate(int version)
   }
 
   updateHttpClient.end();
+
+  IPAddress ip = WiFi.localIP();
+    char ipStr[16];
+    snprintf(ipStr, sizeof(ipStr), "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
+    
+  generateAndPublish("ipAddress", ipStr);
 }
 
 void loop()
@@ -235,7 +251,7 @@ void loop()
   server.handleClient();
   ElegantOTA.loop();
 
-    snprintf(msg, MSG_BUFFER_SIZE, "%ld", digitalRead(reedSwitch) == HIGH);
+  snprintf(msg, MSG_BUFFER_SIZE, "%ld", digitalRead(reedSwitch) == HIGH);
   Serial.print("Publish window value: ");
   Serial.print(msg);
   bool success = mqttClient.publish(windowStateTopic, msg, true);
@@ -251,7 +267,7 @@ void loop()
   delay(1000);
 
   int releasedVersion = GetMqttValue(MqttCurrentVersionUrl);
-  if (releasedVersion > MY_VERSION)
+  if (releasedVersion > THIS_VERSION)
   {
     Serial.printf("There is an update to %d\n", releasedVersion);
     PerformUpdate(releasedVersion);
@@ -262,10 +278,14 @@ void loop()
   }
   int stayOn = GetMqttValue(MqttStayOnUrl);
   Serial.printf("stayOn is %d\n", stayOn);
-  if (stayOn == 0)
+  if (stayOn != 1)
   {
     Serial.println("Switching off");
     digitalWrite(powerOff, LOW); // Switch off supply
+  }
+  else
+  {
+    Serial.println("STAYING ON!");
   }
   delay(5000);
   PrintRam();
