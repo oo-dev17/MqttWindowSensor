@@ -7,10 +7,11 @@
 #include <ESP8266WebServer.h>
 #include <ElegantOTA.h>
 
+// NEEDS "MQTT.0" on 1883 and "REST-API.0 on 8093
 const char *mqtt_server = "192.168.2.28";
-String MqttCurrentVersionUrl = "http://" + String(mqtt_server) + ":8093/v1/state/mqtt.0.WindowSensors.CurrentVersion";
-String MqttStayOnUrl = "http://" + String(mqtt_server) + ":8093/v1/state/mqtt.0.WindowSensors.StayOn";
-// http://192.168.2.28:1883/v1/state/mqtt.0.WindowSensors.3D3346.batteryVoltage
+String RestCurrentVersionUrl = "http://" + String(mqtt_server) + ":8093/v1/state/mqtt.0.WindowSensors.CurrentVersion";
+String RestStayOnUrl = "http://" + String(mqtt_server) + ":8093/v1/state/mqtt.0.WindowSensors.StayOn";
+// http://192.168.2.28:8093/v1/state/mqtt.0.WindowSensors.3D3346.batteryVoltage
 const char *deviceClassIdentifier = "WindowSensors"; // Example parent device class
 
 const int THIS_VERSION = 2;
@@ -262,7 +263,7 @@ void loop()
   
   delay(2000);
 
-  int releasedVersion = GetMqttValue(MqttCurrentVersionUrl);
+  int releasedVersion = GetMqttValue(RestCurrentVersionUrl);
   if (releasedVersion > THIS_VERSION)
   {
     Serial.printf("There is an update to %d\n", releasedVersion);
