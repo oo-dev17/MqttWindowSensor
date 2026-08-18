@@ -51,8 +51,7 @@ void createStates(const char *ids[], int count, const char *type)
                        "}";
     // Hier ggf. deine URL-Encoding-Funktion verwenden
     String url = "http://" + String(iobrokerIpAddress) + ":8093/v1/object/mqtt.0.WindowSensors." + String(macString) + "." +
-                 String(ids[i]) +
-                 "?value=" + json;
+                 String(ids[i]);
 
     Serial.println("URL " + url);
     Serial.println("JSON " + json);
