@@ -1,4 +1,3 @@
-#include <PubSubClient.h>
 #include <ESP8266WiFi.h>
 #include <ArduinoJson.h>
 #include "wifiConfig.h"
@@ -8,63 +7,96 @@
 #include <ElegantOTA.h>
 
 // NEEDS "MQTT.0" on 1883 and "REST-API.0 on 8093
-const char *mqtt_server = "192.168.2.28";
-String RestCurrentVersionUrl = "http://" + String(mqtt_server) + ":8093/v1/state/mqtt.0.WindowSensors.CurrentVersion";
-String RestStayOnUrl = "http://" + String(mqtt_server) + ":8093/v1/state/mqtt.0.WindowSensors.StayOn";
+const char *iobrokerIpAddress = "192.168.2.28";
+String RestCurrentVersionUrl = "http://" + String(iobrokerIpAddress) + ":8093/v1/state/mqtt.0.WindowSensors.CurrentVersion";
+String RestStayOnUrl = "http://" + String(iobrokerIpAddress) + ":8093/v1/state/mqtt.0.WindowSensors.StayOn";
 // http://192.168.2.28:8093/v1/state/mqtt.0.WindowSensors.3D3346.batteryVoltage
-const char *deviceClassIdentifier = "WindowSensors"; // Example parent device class
 
 const int THIS_VERSION = 2;
 
 WiFiClient wifiClient;
 HTTPClient httpClient;
-PubSubClient mqttClient(wifiClient);
 
 ESP8266WebServer server(80);
 
 unsigned long lastMsg = 0;
-char windowStateTopic[50];
-char batteryVoltageTopic[50];
-char loggingTopic[50];
 
 #define MSG_BUFFER_SIZE (50)
 char msg[MSG_BUFFER_SIZE];
 char macString[7]; // 6 characters + null terminator
 
+void createStates(const char *ids[], int count, const char *type)
+{
+  for (int i = 0; i < count; i++)
+  {
+
+    String json = "{\"type\":\"state\",\"common\":{"
+                  "\"name\":\"" +
+                  String(ids[i]) + "\","
+                                   "\"type\":\"" +
+                  String(type) + "\","
+                                 "\"role\":\"state\","
+                                 "\"read\":true,"
+                                 "\"write\":true"
+                                 "},\"native\":{}}";
+
+    // Hier ggf. deine URL-Encoding-Funktion verwenden
+    String url = "http://" + String(iobrokerIpAddress) + ":8093/v1/object/mqtt.0.WindowSensors." + String(macString) + "." +
+                 String(ids[i]) +
+                 "?value=" + json;
+
+    WiFiClient client;
+    HTTPClient http;
+
+    http.begin(client, url);
+    int code = http.GET();
+    Serial.println(String("URL ") + url);
+    Serial.printf("%s -> HTTP %d\n", ids[i], code);
+
+    http.end();
+  }
+}
+
+class RestSendTopic
+{
+public:
+  char url[64];
+  RestSendTopic() {}
+  RestSendTopic(const char *topic)
+  {
+    snprintf(url, sizeof(url), "http://%s:8093/set/mqtt.0.WindowSensors.%s.%s?value=", iobrokerIpAddress, macString, topic);
+  }
+};
+
+RestSendTopic windowStateTopic;
+RestSendTopic currentVersionTopic;
+RestSendTopic batteryVoltageTopic;
+RestSendTopic loggingTopic;
+RestSendTopic ipAddressTopic;
+
 const int reedSwitch = 13;
 const int powerOff = 16; // set to low to turn off LDO
 
-void MqttClientConnect()
+class RestReceiveTopic
 {
-  while (!mqttClient.connected())
+public:
+  char url[64];
+  RestReceiveTopic() {}
+  RestReceiveTopic(const char *topic, const char *deviceClass, const char *mac)
   {
-    Serial.print("Attempting MQTT connection...");
-    // Create a random client ID
-    String clientId = "esp8266";
-    // Attempt to connect
-    if (mqttClient.connect(clientId.c_str()))
-    {
-      Serial.println("connected");
-    }
-    else
-    {
-      Serial.print("failed, rc=");
-      Serial.print(mqttClient.state());
-      Serial.println(" try again in 5 seconds");
-      // Wait 5 seconds before retrying
-      delay(5000);
-    }
+    snprintf(url, sizeof(url), "%s/%s/%s/?value=", deviceClass, mac, topic);
   }
-}
+};
+
 int GetMqttValueOverRest(String url)
 {
 
   HTTPClient httpClient;
   int val = -1;
 
+  Serial.println("Trying to read from " + url);
   if (httpClient.begin(wifiClient, url))
   {
-    Serial.println("Trying to read from " + url);
     int httpResponseCode = httpClient.GET();
     if (httpResponseCode > 0)
     {
@@ -96,16 +128,17 @@ int GetMqttValueOverRest(String url)
     return -1;
   }
 }
-bool SetMqttValueOverRest(String url, String value)
+
+void SetMqttValueOverRest(const RestSendTopic &sendTopic, String value)
 {
   HTTPClient httpClient;
 
   // value als Query-Parameter anhängen
-  String fullUrl = url + "?value=" + value;
+  String fullUrl = String(sendTopic.url) + value;
+  Serial.println("Trying to write to " + fullUrl + String(" :") + value + String(" :"));
 
   if (httpClient.begin(wifiClient, fullUrl))
   {
-    Serial.println("Trying to write to " + fullUrl);
     int httpResponseCode = httpClient.GET(); // simple-api nutzt auch für "set" ein GET!
 
     if (httpResponseCode > 0)
@@ -120,28 +153,40 @@ bool SetMqttValueOverRest(String url, String value)
         Serial.print("Failed to parse JSON: ");
         Serial.println(error.c_str());
         httpClient.end();
-        return false;
+        return;
       }
 
       // simple-api gibt beim /set/ ebenfalls {"val":..., "ack":true, ...} zurück
       bool ack = doc["ack"] | false;
       httpClient.end();
-      return ack;
+      return;
     }
     else
     {
-      Serial.println("Error in HTTP request:0");
+      Serial.println("Error in HTTP set request:0");
       httpClient.end();
-      return false;
+      return;
     }
   }
   else
   {
-    Serial.println("Error in HTTP request (httpClient.begin:false)");
+    Serial.println("Error in HTTP set request (httpClient.begin:false) for" + fullUrl);
     httpClient.end();
-    return false;
+    return;
   }
 }
+void sendMqtt(const RestSendTopic &sendTopic, const String &message)
+{
+  SetMqttValueOverRest(sendTopic, message.c_str());
+}
+
+const char *stringStates[] = {
+    "battery",
+    "ipAddress",
+    "currentVersion"};
+const char *numberStates[] = {
+    "windowState"};
+
 void setup()
 {
   // Init Serial Monitor
@@ -173,9 +218,6 @@ void setup()
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP());
 
-  mqttClient.setServer(mqtt_server, 1883);
-  MqttClientConnect();
-
   server.on("/", []()
             { server.send(200, "text/plain", "Hi! This is ElegantOTA Demo. go to subpage /update"); });
 
@@ -185,30 +227,22 @@ void setup()
   // Retrieve the MAC address of the device
   uint8_t mac[6];
   WiFi.macAddress(mac);
-  // Create a string for the last three bytes
-
   sprintf(macString, "%02X%02X%02X", mac[3], mac[4], mac[5]);
 
-  snprintf(windowStateTopic, sizeof(windowStateTopic), "%s/%s/windowState", deviceClassIdentifier, macString);
-  snprintf(loggingTopic, sizeof(loggingTopic), "%s/%s/log", deviceClassIdentifier, macString);
-  snprintf(batteryVoltageTopic, sizeof(batteryVoltageTopic), "%s/%s/batteryVoltage", deviceClassIdentifier, macString);
-}
-void generateAndPublish(const char *topicType, const char *message)
-{
-  char topic[50];
-  snprintf(topic, sizeof(topic), "%s/%s/%s", deviceClassIdentifier, macString, topicType);
-  bool success = mqttClient.publish(topic, message, true);
-  Serial.println(String("Publish to ") + topic + String(" :") + message + String(" :") + (success ? " SUCCESS" : "FAIL!"));
-}
-void generateAndPublish(const char *topicType, const String &message)
-{
-  generateAndPublish(topicType, message.c_str());
+  createStates(stringStates, 3, "string");
+  createStates(numberStates, 1, "number");
+
+  windowStateTopic = RestSendTopic("windowState");
+  currentVersionTopic = RestSendTopic("currentVersion");
+  loggingTopic = RestSendTopic("log");
+  batteryVoltageTopic = RestSendTopic("batteryVoltage");
+  ipAddressTopic = RestSendTopic("ipAddress");
 }
 
 void Log(String string)
 {
   snprintf(msg, MSG_BUFFER_SIZE, "%ld", string);
-  generateAndPublish("log", msg);
+  SetMqttValueOverRest(loggingTopic, msg);
 }
 
 void PrintRam()
@@ -246,7 +280,7 @@ void PerformUpdate(int version)
       if (written == contentLength)
       {
         Serial.println("Firmware written successfully!");
-        generateAndPublish("currentVersion", String(THIS_VERSION));
+        SetMqttValueOverRest(currentVersionTopic, String(THIS_VERSION));
         Log("Updated to version" + String(version));
       }
       else
@@ -286,26 +320,25 @@ void PerformUpdate(int version)
   updateHttpClient.end();
 
   IPAddress ip = WiFi.localIP();
-    char ipStr[16];
-    snprintf(ipStr, sizeof(ipStr), "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
-    
-  generateAndPublish("ipAddress", ipStr);
+  char ipStr[16];
+  snprintf(ipStr, sizeof(ipStr), "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
+
+  SetMqttValueOverRest(ipAddressTopic, ipStr);
 }
 
 void loop()
 {
 
-  MqttClientConnect();
   server.handleClient();
   ElegantOTA.loop();
 
   snprintf(msg, MSG_BUFFER_SIZE, "%ld", digitalRead(reedSwitch) == HIGH);
-  generateAndPublish(windowStateTopic, msg);  
-  
+  SetMqttValueOverRest(windowStateTopic, msg);
+
   float vBatt = (analogRead(A0) * 4.2 * 10 / 1023);
-  snprintf(msg, MSG_BUFFER_SIZE, "%ld", vBatt);  
-  generateAndPublish(batteryVoltageTopic, String(analogRead(A0) * 4.2 * 10 / 1023));
-  
+  snprintf(msg, MSG_BUFFER_SIZE, "%ld", vBatt);
+  SetMqttValueOverRest(batteryVoltageTopic, String(analogRead(A0) * 4.2 * 10 / 1023));
+
   delay(2000);
 
   int releasedVersion = GetMqttValueOverRest(RestCurrentVersionUrl);
@@ -318,7 +351,7 @@ void loop()
   {
     Serial.printf("No update available for, released: %d\n", releasedVersion);
   }
-  int stayOn = GetMqttValueOverRest(MqttStayOnUrl);
+  int stayOn = GetMqttValueOverRest(RestStayOnUrl);
   Serial.printf("stayOn is %d\n", stayOn);
   if (stayOn != 1)
   {
