@@ -56,7 +56,7 @@ void MqttClientConnect()
     }
   }
 }
-int GetMqttValue(String url)
+int GetMqttValueOverRest(String url)
 {
 
   HTTPClient httpClient;
@@ -96,7 +96,52 @@ int GetMqttValue(String url)
     return -1;
   }
 }
+bool SetMqttValueOverRest(String url, String value)
+{
+  HTTPClient httpClient;
 
+  // value als Query-Parameter anhängen
+  String fullUrl = url + "?value=" + value;
+
+  if (httpClient.begin(wifiClient, fullUrl))
+  {
+    Serial.println("Trying to write to " + fullUrl);
+    int httpResponseCode = httpClient.GET(); // simple-api nutzt auch für "set" ein GET!
+
+    if (httpResponseCode > 0)
+    {
+      String payload = httpClient.getString();
+      Serial.println("Response: " + payload);
+
+      JsonDocument doc;
+      DeserializationError error = deserializeJson(doc, payload);
+      if (error)
+      {
+        Serial.print("Failed to parse JSON: ");
+        Serial.println(error.c_str());
+        httpClient.end();
+        return false;
+      }
+
+      // simple-api gibt beim /set/ ebenfalls {"val":..., "ack":true, ...} zurück
+      bool ack = doc["ack"] | false;
+      httpClient.end();
+      return ack;
+    }
+    else
+    {
+      Serial.println("Error in HTTP request:0");
+      httpClient.end();
+      return false;
+    }
+  }
+  else
+  {
+    Serial.println("Error in HTTP request (httpClient.begin:false)");
+    httpClient.end();
+    return false;
+  }
+}
 void setup()
 {
   // Init Serial Monitor
@@ -263,7 +308,7 @@ void loop()
   
   delay(2000);
 
-  int releasedVersion = GetMqttValue(RestCurrentVersionUrl);
+  int releasedVersion = GetMqttValueOverRest(RestCurrentVersionUrl);
   if (releasedVersion > THIS_VERSION)
   {
     Serial.printf("There is an update to %d\n", releasedVersion);
@@ -273,7 +318,7 @@ void loop()
   {
     Serial.printf("No update available for, released: %d\n", releasedVersion);
   }
-  int stayOn = GetMqttValue(MqttStayOnUrl);
+  int stayOn = GetMqttValueOverRest(MqttStayOnUrl);
   Serial.printf("stayOn is %d\n", stayOn);
   if (stayOn != 1)
   {
