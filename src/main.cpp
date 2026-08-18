@@ -30,29 +30,38 @@ void createStates(const char *ids[], int count, const char *type)
   for (int i = 0; i < count; i++)
   {
 
-    String json = "{\"type\":\"state\",\"common\":{"
-                  "\"name\":\"" +
-                  String(ids[i]) + "\","
-                                   "\"type\":\"" +
-                  String(type) + "\","
-                                 "\"role\":\"state\","
-                                 "\"read\":true,"
-                                 "\"write\":true"
-                                 "},\"native\":{}}";
+    WiFiClient client;
+    HTTPClient http;
 
+    String json =
+        "{"
+        "\"id\":\"" +
+        String(ids[i]) + "\","
+                         "\"type\":\"state\","
+                         "\"common\":{"
+                         "\"name\":\"" +
+        String(ids[i]) + "\","
+                         "\"type\":\"" +
+        String(type) + "\","
+                       "\"role\":\"state\","
+                       "\"read\":true,"
+                       "\"write\":true"
+                       "},"
+                       "\"native\":{}"
+                       "}";
     // Hier ggf. deine URL-Encoding-Funktion verwenden
     String url = "http://" + String(iobrokerIpAddress) + ":8093/v1/object/mqtt.0.WindowSensors." + String(macString) + "." +
                  String(ids[i]) +
                  "?value=" + json;
 
-    WiFiClient client;
-    HTTPClient http;
+    Serial.println("URL " + url);
+    Serial.println("JSON " + json);
 
     http.begin(client, url);
-    int code = http.GET();
-    Serial.println(String("URL ") + url);
-    Serial.printf("%s -> HTTP %d\n", ids[i], code);
+    http.addHeader("Content-Type", "application/json");
 
+    int code = http.POST(json);
+    Serial.printf("%s -> HTTP %d\n", ids[i], code);
     http.end();
   }
 }
