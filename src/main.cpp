@@ -8,9 +8,6 @@
 
 // NEEDS "MQTT.0" on 1883 and "REST-API.0 on 8093
 const char *iobrokerIpAddress = "192.168.2.28";
-String RestCurrentVersionUrl = "http://" + String(iobrokerIpAddress) + ":8093/v1/state/mqtt.0.WindowSensors.CurrentVersion";
-String RestStayOnUrl = "http://" + String(iobrokerIpAddress) + ":8093/v1/state/mqtt.0.WindowSensors.StayOn";
-// http://192.168.2.28:8093/v1/state/mqtt.0.WindowSensors.3D3346.batteryVoltage
 
 const int THIS_VERSION = 2;
 
@@ -68,11 +65,16 @@ void createStates(const char *ids[], int count, const char *type)
 class RestSendTopic
 {
 public:
-  char url[64];
+  char url[100];
   RestSendTopic() {}
   RestSendTopic(const char *topic)
   {
-    snprintf(url, sizeof(url), "http://%s:8093/set/mqtt.0.WindowSensors.%s.%s?value=", iobrokerIpAddress, macString, topic);
+    uint l = snprintf(url, sizeof(url), "http://%s:8093/v1/state/mqtt.0.WindowSensors.%s.%s?value=", iobrokerIpAddress, macString, topic);
+    if (l >= sizeof(url))
+    {
+      Serial.println("Error: URL is too long for RestSendTopic: " + String(topic));
+      url[0] = '\0'; // Set to empty string to indicate error
+    }
   }
 };
 
@@ -82,28 +84,35 @@ RestSendTopic batteryVoltageTopic;
 RestSendTopic loggingTopic;
 RestSendTopic ipAddressTopic;
 
-const int reedSwitch = 13;
-const int powerOff = 16; // set to low to turn off LDO
-
 class RestReceiveTopic
 {
 public:
-  char url[64];
+  char url[90];
   RestReceiveTopic() {}
-  RestReceiveTopic(const char *topic, const char *deviceClass, const char *mac)
+  RestReceiveTopic(const char *topic)
   {
-    snprintf(url, sizeof(url), "%s/%s/%s/?value=", deviceClass, mac, topic);
+    uint l = snprintf(url, sizeof(url), "http://%s:8093/v1/state/mqtt.0.WindowSensors.%s", iobrokerIpAddress, topic);
+    if (l >= sizeof(url))
+    {
+      Serial.println("Error: URL is too long for RestReceiveTopic: " + String(topic));
+      url[0] = '\0'; // Set to empty string to indicate error
+    }
   }
 };
+RestReceiveTopic currentVersion;
+RestReceiveTopic stayOnValue;
 
-int GetMqttValueOverRest(String url)
+const int reedSwitch = 13;
+const int powerOff = 16; // set to low to turn off LDO
+
+int GetMqttValueOverRest(const RestReceiveTopic &receiveTopic)
 {
 
   HTTPClient httpClient;
   int val = -1;
 
-  Serial.println("Trying to read from " + url);
-  if (httpClient.begin(wifiClient, url))
+  Serial.println("Trying to read from " + String(receiveTopic.url));
+  if (httpClient.begin(wifiClient, receiveTopic.url))
   {
     int httpResponseCode = httpClient.GET();
     if (httpResponseCode > 0)
@@ -213,10 +222,17 @@ void setup()
 
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
+  uint retry = 0;
   while (WiFi.status() != WL_CONNECTED)
   {
     delay(500);
     Serial.print(".");
+    retry++;
+    if (retry > 25)
+    {
+      Serial.println("Failed to connect to WiFi. Restarting...");
+      ESP.restart();
+    }
   }
 
   randomSeed(micros());
@@ -243,8 +259,11 @@ void setup()
   windowStateTopic = RestSendTopic("windowState");
   currentVersionTopic = RestSendTopic("currentVersion");
   loggingTopic = RestSendTopic("log");
-  batteryVoltageTopic = RestSendTopic("batteryVoltage");
+  batteryVoltageTopic = RestSendTopic("battery");
   ipAddressTopic = RestSendTopic("ipAddress");
+
+  stayOnValue = RestReceiveTopic("StayOn");
+  currentVersion = RestReceiveTopic("CurrentVersion");
 }
 
 void Log(String string)
@@ -349,7 +368,7 @@ void loop()
 
   delay(2000);
 
-  int releasedVersion = GetMqttValueOverRest(RestCurrentVersionUrl);
+  int releasedVersion = GetMqttValueOverRest(currentVersion);
   if (releasedVersion > THIS_VERSION)
   {
     Serial.printf("There is an update to %d\n", releasedVersion);
@@ -359,7 +378,7 @@ void loop()
   {
     Serial.printf("No update available for, released: %d\n", releasedVersion);
   }
-  int stayOn = GetMqttValueOverRest(RestStayOnUrl);
+  int stayOn = GetMqttValueOverRest(stayOnValue);
   Serial.printf("stayOn is %d\n", stayOn);
   if (stayOn != 1)
   {
